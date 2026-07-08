@@ -1,108 +1,106 @@
-# Crash Severity Classification in R
+# Crash Severity Classification Using R
+
+This project applies machine learning classification techniques in R to predict crash severity using driver involvement and road safety data. The analysis compares multiple models, including Random Forest, K-Nearest Neighbours and Logistic Regression, with a focus on identifying fatal crash outcomes.
+
+The project demonstrates classification modelling, resampling methods, model evaluation and road safety analytics.
+
+---
 
 ## Project Overview
 
-This project applies supervised machine learning to predict crash severity using Australian driver involvement data. The main goal is to identify fatal crash risk patterns and compare classification models that can support road safety analysis and policy targeting.
+Crash severity prediction can support road safety analysis by helping identify patterns associated with more severe crash outcomes. This project uses structured crash-related data to classify crash severity and compare the performance of different modelling approaches.
 
-The project includes binary classification for fatal versus non-fatal crash detection and a multiclass baseline across five crash severity levels. Because class imbalance made the multiclass task difficult, the final analysis focuses mainly on binary fatal crash detection.
+The project considered both binary and multiclass classification. The binary classification task focused on distinguishing fatal crashes from non-fatal crashes, while the multiclass task explored broader crash severity categories.
+
+---
+
+## Objectives
+
+- Prepare crash and driver involvement data for modelling
+- Build binary and multiclass classification models
+- Compare Random Forest, KNN and Logistic Regression approaches
+- Address class imbalance using resampling techniques
+- Evaluate models using accuracy, sensitivity, balanced accuracy, AUC and Kappa
+- Communicate findings through RMarkdown reports and presentation outputs
+
+---
 
 ## Dataset
 
-The dataset contains Australian crash records from 2001 to 2023 and includes 21,349 rows in the supplied CSV file. Crash severity is represented using year, police region, severity category, driver involvement indicators and casualty counts.
+The project uses crash-related driver involvement data with variables describing crash severity and driver characteristics.
 
-Key driver involvement features include:
+The modelling task focused on crash severity outcomes, including:
 
-- Male driver involvement
-- Female driver involvement
-- Young driver involvement
-- Senior driver involvement
-- Provisional driver involvement
-- Overseas licensed driver involvement
-- Unlicensed driver involvement
+- Fatal crashes
+- Non-fatal crashes
+- Multiple crash severity classes in the multiclass modelling task
+
+The cleaned repository includes the supporting data file used for the analysis.
+
+---
 
 ## Methods
 
-- Converted Yes/No driver involvement fields into binary 1/0 variables.
-- Created a `FatalBinary` target variable where fatal crashes are coded as 1 and all other outcomes as 0.
-- Applied an 80/20 train-test split.
-- Addressed class imbalance using resampling methods.
-- Compared Random Forest, KNN and Logistic Regression models.
-- Tested a multiclass Random Forest baseline across five crash severity levels.
-- Evaluated models using balanced accuracy, fatal sensitivity, AUC, Kappa and confusion matrices.
+The workflow included:
 
-## Models Compared
+- Data preparation in R
+- Feature cleaning and transformation
+- Creation of binary fatal/non-fatal outcome variables
+- Train-test splitting
+- Class imbalance handling
+- Random Forest modelling
+- K-Nearest Neighbours modelling
+- Logistic Regression modelling
+- Model comparison using classification metrics
+- Visualisation of predicted versus actual outcomes
 
-### Random Forest
-
-Random Forest was tested using multiple resampling strategies:
+Resampling methods considered included:
 
 - Downsampling
 - Upsampling
 - ROSE
 - SMOTE
 
-The upsampled Random Forest model achieved:
+---
 
-- Balanced Accuracy: 62.20%
-- Fatal Sensitivity: 67.84%
-- AUC: 0.701
-- Kappa: 0.1226
+## Key Results
 
-### K-Nearest Neighbours
+The project found that crash severity classification was challenging due to class imbalance, especially for fatal crash detection.
 
-KNN required a small noise adjustment because binary features created tied distances. A small random noise value was added to allow the model to run successfully.
+Key modelling outcomes included:
 
-The KNN model achieved the strongest overall performance:
+- KNN achieved strong fatal crash sensitivity compared with other models.
+- Random Forest performed reasonably under resampling but showed trade-offs between accuracy and sensitivity.
+- Logistic Regression provided an interpretable baseline model.
+- Binary classification was more practical than multiclass classification for this dataset.
+- Model evaluation required looking beyond accuracy because fatal crashes were underrepresented.
 
-- Balanced Accuracy: 66.20%
-- Fatal Sensitivity: 74.20%
-- AUC: 0.713
-- Kappa: 0.126
+---
 
-### Logistic Regression
+## Skills Demonstrated
 
-Logistic Regression was used as an interpretable baseline model. Both a full model and a reduced model using backward selection were compared.
+- R programming
+- RMarkdown reporting
+- Classification modelling
+- Random Forest
+- K-Nearest Neighbours
+- Logistic Regression
+- Class imbalance handling
+- Model evaluation
+- Confusion matrix interpretation
+- Road safety analytics
+- Data visualisation
 
-The full Logistic Regression model achieved:
-
-- Balanced Accuracy: 59.00%
-- Fatal Sensitivity: 38.03%
-- AUC: 0.679
-- Kappa: 0.1128
-
-## Key Findings
-
-- KNN achieved the strongest overall performance for fatal crash detection.
-- Random Forest provided a balanced modelling approach and useful feature importance outputs.
-- Logistic Regression had lower fatal sensitivity, showing limitations for this nonlinear and imbalanced classification problem.
-- Important predictors included female driver involvement, overseas licensed driver involvement and provisional driver involvement.
-- Class imbalance was a major modelling challenge and required resampling strategies.
-
-## Tools and Libraries
-
-- R
-- RStudio
-- caret
-- randomForest
-- pROC
-- ROSE
-- smotefamily
-- ggplot2
-- dplyr
-- tidyr
-- corrplot
-- class
-- kknn
-- glmnet
-- car
-- readr
-- leaps
-- knitr / R Markdown
+---
 
 ## Repository Structure
 
 ```text
 .
+├── README.md
+├── CLEANING_NOTES.md
+├── requirements.txt
+├── .gitignore
 ├── 01_data_preparation.Rmd
 ├── 02_binary_random_forest.Rmd
 ├── 03_knn_model.Rmd
@@ -112,35 +110,61 @@ The full Logistic Regression model achieved:
 │   └── DriverInvolvement.csv
 ├── figures/
 │   └── actual_vs_predicted_bar.png
-├── presentation/
-│   └── Crash_Severity_Analysis_Overview_Clean.pdf
-├── README.md
-├── requirements.txt
-├── install_packages.R
-└── .gitignore
+└── presentation/
+    └── Crash_Severity_Analysis_Overview_Clean.pdf
 ```
+
+---
 
 ## How to Run
 
-1. Open the R Markdown files in RStudio.
-2. Install the required packages using `install_packages.R` or the package list in `requirements.txt`.
-3. Run `01_data_preparation.Rmd` first to understand the preprocessing workflow.
-4. Run the model files in order:
-   - `02_binary_random_forest.Rmd`
-   - `03_knn_model.Rmd`
-   - `04_logistic_regression.Rmd`
-   - `05_multiclass_random_forest.Rmd`
+Open the RMarkdown files in RStudio and run them in order:
 
-The scripts expect the dataset to be located at:
+```text
+01_data_preparation.Rmd
+02_binary_random_forest.Rmd
+03_knn_model.Rmd
+04_logistic_regression.Rmd
+05_multiclass_random_forest.Rmd
+```
+
+The supporting dataset is located in:
 
 ```text
 data/DriverInvolvement.csv
 ```
 
+---
+
+## Tools
+
+- R
+- RStudio
+- RMarkdown
+- caret
+- randomForest
+- class
+- pROC
+- ggplot2
+
+---
+
 ## Data Availability
 
-The included dataset appears to be an aggregate Australian crash dataset rather than individual personal records. It is included for reproducibility. If this repository is made public, confirm that the dataset source permits redistribution.
+This repository includes a cleaned portfolio version of the crash severity classification project, including analysis scripts, supporting data and selected output materials.
 
-## Cleaning and Privacy Note
+Personal identifiers, team/member details and submission-specific documents have been removed.
 
-This is a cleaned portfolio version of the project. Personal names, team identifiers, generated local R session files, screenshots and unnecessary academic materials have been removed. The original presentation PDF has been replaced with a cleaned version that removes team/member names.
+---
+
+## Portfolio Note
+
+This repository is shared as a public portfolio example of applied classification modelling in R, with a focus on model comparison, class imbalance and practical interpretation of road safety data.
+
+---
+
+## Author
+
+Angad Singh  
+Master of Predictive Analytics  
+Perth, Western Australia
