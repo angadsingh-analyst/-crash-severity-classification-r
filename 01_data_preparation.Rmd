@@ -1,0 +1,55 @@
+---
+title: "Crash Severity Data Preparation"
+output: html_document
+---
+```{r}
+# Step 1: Load required packages
+library(caret)    # For upsampling and data splitting
+library(dplyr)    # For data manipulation
+
+# Step 2: Set seed for reproducibility
+set.seed(123)
+
+# Step 3: Load the dataset
+data <- read.csv("data/DriverInvolvement.csv")
+cat("Initial dataset dimensions:", dim(data), "\n")
+
+# Step 4: Select relevant columns (Crash_Severity and Involving_* indicators)
+# Retain Crash_Severity and columns starting with "Involving_"
+data <- data %>%
+  select(Crash_Severity, starts_with("Involving_"))
+cat("Selected columns:", names(data), "\n")
+
+# Step 5: Convert Yes/No to 1/0 for Involving_* columns
+data[, -1] <- lapply(data[, -1], function(x) ifelse(x == "Yes", 1, 0))
+cat("Sample of binarized data:\n")
+print(head(data[, 1:3]))  # Show first few columns for verification
+
+# Step 6: Convert Crash_Severity to binary FatalBinary (1 = Fatal, 0 = Others)
+data$FatalBinary <- factor(ifelse(data$Crash_Severity == "Fatal", 1, 0))
+cat("Initial class distribution (FatalBinary):\n")
+print(table(data$FatalBinary))
+
+# Step 7: Remove original Crash_Severity column
+data <- data %>% select(-Crash_Severity)
+
+# Step 8: Split into train (80%) and test (20%) sets
+split_index <- createDataPartition(data$FatalBinary, p = 0.8, list = FALSE)
+train <- data[split_index, ]
+test <- data[-split_index, ]
+cat("Training set dimensions:", dim(train), "\n")
+cat("Test set dimensions:", dim(test), "\n")
+cat("Training set class distribution before upsampling:\n")
+print(table(train$FatalBinary))
+
+# Step 9: Upsample the minority class (Fatal, 1) in the training set
+train_balanced <- upSample(
+  x = train[, names(train) != "FatalBinary"],
+  y = train$FatalBinary,
+  yname = "FatalBinary"
+)
+cat("Training set dimensions after upsampling:", dim(train_balanced), "\n")
+cat("Training set class distribution after upsampling:\n")
+print(table(train_balanced$FatalBinary))
+```
+

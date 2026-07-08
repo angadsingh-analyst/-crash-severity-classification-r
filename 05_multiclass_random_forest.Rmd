@@ -1,0 +1,238 @@
+---
+title: "Multiclass Random Forest Baseline"
+output: html_document
+---
+# Overview
+This notebook builds a Random Forest model to predict crash severity using driver involvement data. The dataset is imbalanced, and we use upsampling to balance the training data. We evaluate the model with a confusion matrix, feature importance, and ROC curves.
+
+```{r}
+library(randomForest)
+library(caret)
+library(dplyr)
+library(smotefamily)
+library(pROC)
+library(ggplot2)
+library(corrplot)
+```
+Load the dataset, remove irrelevant columns, and prepare variables for modeling.
+
+- Read DriverInvolvement.csv into a data frame.
+- Remove columns like Crash_Police_Region, Crash_Year, and casualty counts.
+- Check data structure and summary.
+- Confirm no missing values.
+- Categorical variables to factors, then encode "Involving_" columns as numeric (Yes = 1, No = 0).
+```{r}
+data= read.csv("data/DriverInvolvement.csv")
+
+# removing irrelevant columns
+data = subset(data, select=-c(Crash_Police_Region, Crash_Year, Count_Crashes,	Count_Casualty_Fatality,	Count_Casualty_Hospitalised,	Count_Casualty_MedicallyTreated,	Count_Casualty_MinorInjury,	Count_Casualty_All))
+str(data)
+summary(data)
+anyNA(data)
+```
+```{r}
+# Convert categorical variables to factors
+data = data %>%
+  mutate(across(c(Crash_Severity, Involving_Male_Driver,
+                  Involving_Female_Driver, Involving_Young_Driver_16.24,
+                  Involving_Senior_Driver_60plus, Involving_Provisional_Driver,
+                  Involving_Overseas_Licensed_Driver, Involving_Unlicensed_Driver), as.factor))
+
+# Convert Involving columns to numeric random forest ingestion
+data <- data %>%
+  mutate(across(starts_with("Involving_"), ~ as.numeric(. == "Yes")))
+```
+
+Split the data into training (80%) and testing (20%) sets for model training and evaluation.
+
+- Set seed for reproducibility.
+- Use stratified sampling to maintain class distribution in Crash_Severity.
+- Create training and testing datasets.
+```{r}
+set.seed(123)  # For reproducibility
+
+# Create training and testing split
+trainIndex = createDataPartition(data$Crash_Severity, p = 0.8, list = FALSE)
+trainData = data[trainIndex, ]
+testData = data[-trainIndex, ]
+```
+There is a clear unbalance in the classes whereby Fatal only has 1708 instances
+```{r}
+table(trainData$Crash_Severity)
+```
+
+To balance out the dataset, we have options between:
+1. Oversampling
+  a. Synthetic generation
+  b. Simple upsampling by randomly duplicating entries
+2. Downsampling
+
+Simple upsampling is applied only to the training dataset because:
+1. It maintains the pattern and characteristics of the dataset instead of potentially removing important information/patterns
+2. Simple upsampling will not introduce bias by arbitrarily adding new information which is not correct
+3. Upsampling only the training dataset ensures that the testing dataset accurately reflects real-life scenario.
+```{r}
+train_balanced <- upSample(
+  x = trainData %>% select(-Crash_Severity),  # Predictors
+  y = trainData$Crash_Severity,               # Target variable
+  yname = "Crash_Severity"                    # Name of the target column
+)
+
+# Confirm balanced class sizes
+table(train_balanced$Crash_Severity)
+```
+
+```{r}
+# Correlation Heatmap
+corr <- cor(train_balanced[, grepl("Involving_", names(train_balanced))])
+corrplot(corr, method = "color", title = "Correlation of Driver Involvement Features")
+```
+
+
+Compare class distributions before and after upsampling.
+
+- Plot bar chart for original training data (blue).
+- Plot bar chart for balanced training data (green).
+```{r}
+# Plot original class distribution
+ggplot(trainData, aes(x = Crash_Severity)) +
+  geom_bar(fill = "#ff7300") +
+  labs(title = "Class Distribution") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Plot balanced class distribution
+ggplot(train_balanced, aes(x = Crash_Severity)) +
+  geom_bar(fill = "green") +
+  labs(title = "Balanced Class Distribution") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+Training random forest model on balanced training data
+```{r}
+rf_model = randomForest(Crash_Severity ~ . , data = train_balanced,
+                         ntree = 1000,  # Number of trees
+                         mtry = sqrt(ncol(train_balanced) - 1),  # Default for classification
+                         importance = TRUE,
+                         )
+```
+
+Examine model performance on training data and feature importance.
+
+- Print model summary (OOB error, confusion matrix).
+- Display feature importance table.
+- Plot variable importance to identify key predictors.
+```{r}
+# Print model summary
+print(rf_model)
+
+# Displaaeture importance
+importance(rf_model)
+
+# Plot variabble imporance
+varImpPlot(rf_model)
+```
+Assess model performance on the test set using a confusion matrix.
+
+- Predict Crash_Severity for test data.
+- Compute confusion matrix and performance metrics (accuracy, sensitivity, etc.).
+```{r}
+predictions = predict(rf_model, newdata = testData)
+
+# Compuute confusion matrix and statistics
+confusionMatrix(predictions, testData$Crash_Severity)
+```
+
+Compare actual and predicted class counts using a grouped bar chart.
+
+- Extract confusion matrix.
+- Calculate actual and predicted counts.
+- Create a bar chart comparing actual vs. predicted outcomes.
+- Save the chart as a PNG file.
+```{r}
+# Extract confusion matrix
+conf_matrix <- confusionMatrix(predictions, testData$Crash_Severity)$table
+
+# Calculate actual and predicted counts
+actual_counts <- table(testData$Crash_Severity)
+predicted_counts <- table(predictions)
+
+classes <- levels(testData$Crash_Severity)
+
+# Create data frame for bar chart
+results_data <- data.frame(
+  Outcome = rep(classes, 2),
+  Count = c(actual_counts, predicted_counts),
+  Type = rep(c("Actual", "Predicted"), each = length(classes))
+)
+
+# Plot grouped bar chart
+ggplot(results_data, aes(x = Outcome, y = Count, fill = Type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Actual vs. Predicted Outcomes (Random Forest)",
+    x = "Outcome",
+    y = "Count"
+  ) +
+  scale_fill_manual(values = c("Actual" = "#4ECDC4", "Predicted" = "#FF6B6B")) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    legend.title = element_blank(),
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# Save the bar chart
+ggsave("actual_vs_predicted_bar.png", width = 8, height = 6, dpi = 300)
+```
+
+Evaluate model performance using multiclass ROC curves (one-vs-rest).
+
+- Predict class probabilities for test data.
+- Compute ROC curves and AUC for each class.
+- Plot ROC curves with distinct colors.
+```{r}
+# Predict class probabilities for test data
+rf_probs <- predict(rf_model, newdata = testData, type = "prob")
+
+# Get the true class labels
+true_labels <- testData$Crash_Severity
+
+# Define the classes
+classes <- levels(true_labels)  # ["Fatal", "Hospitalisation", "Medical treatment", "Minor injury", "Property damage only"]
+
+# Create a list to store ROC objects
+roc_list <- list()
+auc_values <- numeric(length(classes))
+
+# Compute ROC for each class (One-vs-Rest)
+for (i in 1:length(classes)) {
+  # Create binary response: 1 for current class, 0 for others
+  binary_response <- as.numeric(true_labels == classes[i])
+  
+  # Get probabilities for the current class
+  class_probs <- rf_probs[, classes[i]]
+  
+  # Compute ROC
+  roc_obj <- roc(binary_response, class_probs, levels = c(0, 1), direction = "<")
+  roc_list[[classes[i]]] <- roc_obj
+  auc_values[i] <- auc(roc_obj)
+}
+
+# Plot ROC curves for all classes
+plot_colors <- c("#FF6B6B", "#4ECDC4", "#FFD166", "#06D6A0", "#1B9AAA")  # Distinct colors
+plot(roc_list[[1]], col = plot_colors[1], main = "Multiclass ROC Curves (One-vs-Rest)")
+for (i in 2:length(classes)) {
+  plot(roc_list[[i]], col = plot_colors[i], add = TRUE)
+}
+
+# Add legend
+legend("bottomright", legend = paste(classes, "AUC =", round(auc_values, 3)), 
+       col = plot_colors, lwd = 2, cex = 0.8)
+```
+
+# Conclusion
+- Model Outcome: The Random Forest model achieved low accuracy (22.69%) and high OOB error (70.42%), with poor sensitivity for most classes (e.g., 10.38% for Medical treatment).
+- Feature Insights: Involving_Overseas_Licensed_Driver was the most influential predictor (MeanDecreaseAccuracy: 169.58), showing its strong role in crash severity.
+- Limitations: Poor performance is due to class imbalance and complex class boundaries, this is further explored in our binary classification model.
+  - We suspect the features for non-fatal classes lack sufficient distinctiveness, leading to poor prediction of Hospitalisation, Medical treatment, Minor injury, and Property damage only.
+- Value: This analysis provides insights into feature importance and multiclass challenges, and acts as a baseline for the binary classification approach.

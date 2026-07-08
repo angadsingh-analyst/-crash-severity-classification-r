@@ -1,0 +1,388 @@
+---
+title: "Logistic Regression Baseline"
+output: html_document
+---
+
+```{r}
+#install.packages('leaps')
+library(leaps)
+library(dplyr)
+library(ggplot2)
+library(glmnet)
+library(caret)
+library(pROC)
+library(car)
+library(readr)
+```
+
+```{r}
+# Data preparation
+# Step 1: Load required packages
+library(caret)    # For upsampling and data splitting
+library(dplyr)    # For data manipulation
+
+# Step 2: Set seed for reproducibility
+set.seed(123)
+
+# Step 3: Load the dataset
+data <- read.csv("data/DriverInvolvement.csv")
+cat("Initial dataset dimensions:", dim(data), "\n")
+
+# Step 4: Select relevant columns (Crash_Severity and Involving_* indicators)
+# Retain Crash_Severity and columns starting with "Involving_"
+data <- data %>%
+  select(Crash_Severity, starts_with("Involving_"))
+cat("Selected columns:", names(data), "\n")
+
+# Step 5: Convert Yes/No to 1/0 for Involving_* columns
+data[, -1] <- lapply(data[, -1], function(x) ifelse(x == "Yes", 1, 0))
+cat("Sample of binarized data:\n")
+print(head(data[, 1:3]))  # Show first few columns for verification
+
+# Step 6: Convert Crash_Severity to binary FatalBinary (1 = Fatal, 0 = Others)
+data$FatalBinary <- factor(ifelse(data$Crash_Severity == "Fatal", 1, 0))
+cat("Initial class distribution (FatalBinary):\n")
+print(table(data$FatalBinary))
+
+# Step 7: Remove original Crash_Severity column
+data <- data %>% select(-Crash_Severity)
+
+# Step 8: Split into train (80%) and test (20%) sets
+split_index <- createDataPartition(data$FatalBinary, p = 0.8, list = FALSE)
+train <- data[split_index, ]
+test <- data[-split_index, ]
+cat("Training set dimensions:", dim(train), "\n")
+cat("Test set dimensions:", dim(test), "\n")
+cat("Training set class distribution before upsampling:\n")
+print(table(train$FatalBinary))
+
+# Step 9: Upsample the minority class (Fatal, 1) in the training set
+train_balanced <- upSample(
+  x = train[, names(train) != "FatalBinary"],
+  y = train$FatalBinary,
+  yname = "FatalBinary"
+)
+cat("Training set dimensions after upsampling:", dim(train_balanced), "\n")
+cat("Training set class distribution after upsampling:\n")
+print(table(train_balanced$FatalBinary))
+str(train_balanced)
+```
+
+```{r}
+# create a training dataset
+cleaned_data.tr <-  select(train_balanced,
+                           Involving_Male_Driver,
+                           Involving_Female_Driver,
+                           Involving_Young_Driver_16.24,
+                           Involving_Senior_Driver_60plus,
+                           Involving_Provisional_Driver,
+                           Involving_Overseas_Licensed_Driver,
+                           Involving_Unlicensed_Driver,
+                           FatalBinary
+                           )
+
+# factorize the cleaned data
+transformed_data.tr <- transform(cleaned_data.tr,
+                                 Involving_Male_Driver = factor(Involving_Male_Driver),
+                                 Involving_Female_Driver =factor(Involving_Female_Driver),
+                                 Involving_Young_Driver_16.24 = factor(Involving_Young_Driver_16.24),
+                                 Involving_Senior_Driver_60plus = factor(Involving_Senior_Driver_60plus),
+                                 Involving_Provisional_Driver = factor(Involving_Provisional_Driver),
+                                 Involving_Overseas_Licensed_Driver = factor(Involving_Overseas_Licensed_Driver),
+                                 Involving_Unlicensed_Driver = factor(Involving_Unlicensed_Driver),
+                                 FatalBinary = factor(FatalBinary)
+                                 )
+
+# create a test dataset
+cleaned_data.ts <-  select(test, Involving_Male_Driver,
+                           Involving_Female_Driver,
+                           Involving_Young_Driver_16.24,
+                           Involving_Senior_Driver_60plus,
+                           Involving_Provisional_Driver,
+                           Involving_Overseas_Licensed_Driver,
+                           Involving_Unlicensed_Driver,
+                           FatalBinary
+                           )
+
+# factorize the cleaned dataset
+transformed_data.ts <- transform(cleaned_data.ts,
+                Involving_Male_Driver = factor(Involving_Male_Driver),
+                Involving_Female_Driver = factor(Involving_Female_Driver),
+                Involving_Young_Driver_16.24 = factor(Involving_Young_Driver_16.24),
+                Involving_Senior_Driver_60plus = factor(Involving_Senior_Driver_60plus),
+                Involving_Provisional_Driver = factor(Involving_Provisional_Driver),
+                Involving_Overseas_Licensed_Driver = factor(Involving_Overseas_Licensed_Driver),
+                Involving_Unlicensed_Driver = factor(Involving_Unlicensed_Driver),
+                FatalBinary = factor(FatalBinary)
+                )
+
+```
+
+```{r}
+# check datasets
+# training dataset
+str(transformed_data.tr)
+summary(transformed_data.tr)
+colSums(is.na(transformed_data.tr))
+
+# test dataset
+str(transformed_data.ts)
+summary(transformed_data.ts)
+colSums(is.na(transformed_data.ts))
+```
+```{r}
+# commented out as this part is not necessary
+
+#transformed_data$sev <- ifelse(transformed_data$Crash_Severity == #'Fatal', 
+#                1, # For Fatal Crash
+#                0 # For Other Crash
+#                )
+# investigate transformed_data
+# str(transformed_data)
+
+```
+
+
+```{r}
+# model creation
+mod.1 <- regsubsets(FatalBinary ~ .,
+                    data = transformed_data.tr[,],
+                    method = 'backward')
+
+mod.1.sum <- summary(mod.1)
+mod.1.sum # print result
+
+```
+
+```{r}
+# print up to third variables selected
+selected_vars <- names(coef(mod.1, id = 3))[-1]
+selected_vars
+
+```
+
+```{r}
+# model creation based on the selected variables
+mod.gl <- glm(FatalBinary ~ Involving_Female_Driver
+              + Involving_Provisional_Driver
+              + Involving_Overseas_Licensed_Driver,
+              data = transformed_data.tr,
+              family = 'binomial')
+
+# prediction
+pr.gl <- predict(mod.gl,
+                 newdata = transformed_data.ts,
+                 type = 'response') # Output is probability
+
+summary(pr.gl) # print out the summary
+
+```
+
+```{r}
+# Draw a ROC curve
+roc_obj <- roc(transformed_data.ts$FatalBinary, pr.gl)
+plot(roc_obj, 
+     main = "Backward Propagation ROC Curve",
+     print.auc = TRUE,        # Display AUC value on the plot
+     auc.polygon = TRUE,      # Shade the area under the curve
+     grid = TRUE,             # Add a grid for readability
+     col = "#FF914D",         # Color of the ROC curve
+     lwd = 2,                 # Line width of the ROC curve
+     print.thres = TRUE)       # Display threshold values on the curve)
+auc(roc_obj)
+
+coords(roc_obj, x = "best", best.method = "youden", transpose = FALSE)
+
+sev.pr <- ifelse(pr.gl > 0.5747412, # Threshold of 0.1, 0.07591005
+                1, # This classified as fatal
+                0) # This classified as others
+
+# Confusion Matrix - truth vs prediction
+table(transformed_data.ts$FatalBinary, # Truth
+      sev.pr) # Prediction
+```
+
+
+```{r}
+# calculate accuracy
+accuracy_3var <- (2992+171)/(2992+851+255+171)
+accuracy_3var
+```
+
+```{r}
+# 1. Fit the full logistic model
+full_glm <- glm(FatalBinary ~ Involving_Male_Driver
+                + Involving_Female_Driver
+                + Involving_Young_Driver_16.24
+                + Involving_Senior_Driver_60plus
+                + Involving_Provisional_Driver
+                + Involving_Overseas_Licensed_Driver
+                + Involving_Unlicensed_Driver,
+                data = transformed_data.tr, family = binomial)
+
+# 2. Perform backward stepwise selection based on AIC
+step_glm <- step(full_glm, direction = "backward", trace = FALSE)
+summary(step_glm)
+
+# prediction
+pr.full_glm <- predict(full_glm,
+                 newdata = transformed_data.ts,
+                 type = 'response') # Output is probability
+
+summary(pr.full_glm) # print out the summary
+
+```
+
+plot(roc_obj,
+     main = "ROC Curve for KNN Model (Fatal vs. Non-Fatal)",
+     print.auc = TRUE,        # Display AUC value on the plot
+     auc.polygon = TRUE,      # Shade the area under the curve
+     grid = TRUE,             # Add a grid for readability
+     col = "#FF914D",         # Color of the ROC curve
+     lwd = 2,                 # Line width of the ROC curve
+     print.thres = TRUE       # Display threshold values on the curve
+)
+roc_obj$auc
+
+```{r}
+# Draw a ROC curve
+roc_obj_2 <- roc(transformed_data.ts$FatalBinary, pr.full_glm)
+plot(roc_obj_2, 
+     main = "Fully Fitted ROC Curve",
+    print.auc = TRUE,        # Display AUC value on the plot
+     auc.polygon = TRUE,      # Shade the area under the curve
+     grid = TRUE,             # Add a grid for readability
+     col = "#FF914D",         # Color of the ROC curve
+     lwd = 2,                 # Line width of the ROC curve
+     print.thres = TRUE       # Display threshold values on the curve
+     )
+auc(roc_obj_2)
+
+coords(roc_obj_2, x = "best", best.method = "youden", transpose = FALSE)
+
+sev.pr_2 <- ifelse(pr.full_glm > 0.59351, # Threshold of 0.1, 0.07591005
+                1, # This classified as fatal
+                0) # This classified as others
+
+# Confusion Matrix - truth vs prediction
+table(transformed_data.ts$FatalBinary, # Truth
+      sev.pr_2) # Prediction
+```
+
+```{r}
+# calculate accuracy
+accuracy_full <- (3053+162)/(3053+790+264+162)
+accuracy_full
+```
+
+
+```{r}
+#install.packages("car")
+#install.packages("readr")
+vif_values <- vif(mod.gl)
+print(vif_values)
+print("**********************************")
+vif_values_glmFull <- vif(full_glm)
+print(vif_values_glmFull)
+
+```
+```{r}
+pairs(data)
+```
+
+```{r}
+# Function to calculate balanced accuracy
+calculate_balanced_accuracy <- function(conf_matrix) {
+  recall_0 <- conf_matrix[1, 1] / (conf_matrix[1, 1] + conf_matrix[1, 2]) # Recall for Class 0
+  recall_1 <- conf_matrix[2, 2] / (conf_matrix[2, 2] + conf_matrix[2, 1]) # Recall for Class 1
+  return((recall_0 + recall_1) / 2)
+}
+
+conf_matrix_backward <- matrix(c(2992, 851, 255, 171), nrow = 2, byrow = TRUE) # mod.gl
+conf_matrix_full <- matrix(c(3053, 790, 264, 162), nrow = 2, byrow = TRUE) # full_glm
+
+# Calculate balanced accuracy
+balanced_acc_backward <- calculate_balanced_accuracy(conf_matrix_backward)
+balanced_acc_full <- calculate_balanced_accuracy(conf_matrix_full)
+
+# Print results
+cat("Balanced Accuracy (mod.gl):", round(balanced_acc_backward, 4), "\n")
+cat("Balanced Accuracy (full_glm):", round(balanced_acc_full, 4), "\n")
+```
+```{r}
+# Function to calculate sensitivity (recall) for each class
+calculate_sensitivity <- function(conf_matrix) {
+  # Sensitivity for Class 0 (Non-Fatal)
+  sens_0 <- conf_matrix[1, 1] / (conf_matrix[1, 1] + conf_matrix[1, 2])
+  # Sensitivity for Class 1 (Fatal)
+  sens_1 <- conf_matrix[2, 2] / (conf_matrix[2, 2] + conf_matrix[2, 1])
+  return(list(Sensitivity_NonFatal = sens_0, Sensitivity_Fatal = sens_1))
+}
+
+conf_matrix_backward <- matrix(c(2992, 851, 255, 171), nrow = 2, byrow = TRUE) # mod.gl
+conf_matrix_full <- matrix(c(3053, 790, 264, 162), nrow = 2, byrow = TRUE) # full_glm
+
+# Calculate sensitivity for both models
+sens_backward <- calculate_sensitivity(conf_matrix_backward)
+sens_full <- calculate_sensitivity(conf_matrix_full)
+
+# Print results
+cat("Backward Propagation Model (mod.gl):\n")
+cat("Sensitivity (Non-Fatal, Class 0):", round(sens_backward$Sensitivity_NonFatal, 4), "\n")
+cat("Sensitivity (Fatal, Class 1):", round(sens_backward$Sensitivity_Fatal, 4), "\n\n")
+cat("Fully Fitted Model (full_glm):\n")
+cat("Sensitivity (Non-Fatal, Class 0):", round(sens_full$Sensitivity_NonFatal, 4), "\n")
+cat("Sensitivity (Fatal, Class 1):", round(sens_full$Sensitivity_Fatal, 4), "\n")
+```
+```{r}
+# Function to calculate Kappa from a confusion matrix
+calculate_kappa <- function(conf_matrix, actual_labels) {
+  # Overall Accuracy (Po)
+  total <- sum(conf_matrix)
+  po <- sum(diag(conf_matrix)) / total
+  
+  # Expected Agreement (Pe)
+  class_counts <- table(actual_labels)
+  actual_props <- class_counts / sum(class_counts)
+  predicted_counts <- colSums(conf_matrix)
+  predicted_props <- predicted_counts / sum(predicted_counts)
+  pe <- sum(actual_props * predicted_props)
+  
+  # Kappa = (Po - Pe) / (1 - Pe)
+  kappa <- (po - pe) / (1 - pe)
+  
+  return(kappa)
+}
+
+# Confusion matrix for Backward Propagation Model (mod.gl)
+conf_matrix_backward <- matrix(c(2992, 851, 255, 171), nrow = 2, byrow = TRUE)
+dimnames(conf_matrix_backward) <- list("Actual" = c("0", "1"), "Predicted" = c("0", "1"))
+
+# Confusion matrix for Fully Fitted Model (full_glm)
+conf_matrix_full <- matrix(c(3053, 790, 264, 162), nrow = 2, byrow = TRUE)
+dimnames(conf_matrix_full) <- list("Actual" = c("0", "1"), "Predicted" = c("0", "1"))
+
+# Calculate Kappa for both models
+kappa_backward <- calculate_kappa(conf_matrix_backward, transformed_data.ts$FatalBinary)
+kappa_full <- calculate_kappa(conf_matrix_full, transformed_data.ts$FatalBinary)
+
+# Print results
+cat("Kappa for Backward Propagation Model (mod.gl):", round(kappa_backward, 4), "\n")
+cat("Kappa for Fully Fitted Model (full_glm):", round(kappa_full, 4), "\n")
+```
+The result of each model is like below.
+[Backward Propagation Model]
+**Accuracy**: 0.7409 
+**Sensitivity(Non-Fatal, Class 0)**: 0.7786
+**Sensitivity(Fatal, Class 1)**: 0.4014
+**AUC**: 0.626
+**Balanced Accuracy**: 0.59 
+
+[Fully Fitted Model]
+**Accuracy**: 0.7531
+**Sensitivity(Non-Fatal, Class 0)**: 0.7944
+**Sensitivity(Fatal, Class 1)**: 0.3803
+**AUC**: 0.679
+**Balanced Accuracy**: 0.5874
+
+According to the result above, our model succeeded in predicting Non-Fatal class very well(approximately 80 %), while Fatal class sensitivity is low (approximately 40 %), meaning it is not good for predicting Fatal class. Although the accuracy demonstrated around 75%, this might be attributed to the unbalanced dataset, as balanced accuracy remained low (approximately 0.6). In terms of AUC, it was improved by 0.53, using all of the variables

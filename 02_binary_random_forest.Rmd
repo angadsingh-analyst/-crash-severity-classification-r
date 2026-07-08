@@ -1,0 +1,625 @@
+---
+title: "Binary Random Forest Classification"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE}
+#Loading Required Libraries
+library(randomForest)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(pROC)
+library(ROSE)  
+library(smotefamily)
+#Setting seed for reproducibility 
+set.seed(123)
+```
+
+
+```{r Loading and Preparing Data, include=FALSE}
+#Loading the crash data
+driver_data <- read.csv("data/DriverInvolvement.csv")
+
+#Selecting Crash Severity and Binary Driver Indicators
+driver_filtered <- driver_data %>%
+  select(Crash_Severity, starts_with("Involving"))
+
+#Converting Yes/No to binary 1/0
+driver_filtered[, -1] <- lapply(driver_filtered[, -1], function(x) ifelse(x == "Yes", 1, 0))
+
+#Converting Crash_Severity to binary: 1 = Fatal, 0 = Others
+driver_filtered$FatalBinary <- ifelse(driver_filtered$Crash_Severity == "Fatal", 1, 0)
+
+#Converting Target to Factor for Classification
+driver_filtered$FatalBinary <- factor(driver_filtered$FatalBinary)
+
+```
+
+
+```{r Split Into Train/Test, include=FALSE}
+#80/20 split
+split_index <- createDataPartition(driver_filtered$FatalBinary, p = 0.8, list = FALSE)
+train_data <- driver_filtered[split_index, ]
+test_data  <- driver_filtered[-split_index, ]
+```
+
+
+```{r Exploratory Analysis – Fatality Rate by Driver Type}
+#Preparing long-format data for visual analysis
+library(tidyr)
+
+#Converting FatalBinary to numeric for aggregation
+driver_filtered$FatalBinary <- as.numeric(as.character(driver_filtered$FatalBinary))
+
+#Selecting only Involving_ columns
+involvement_features <- names(driver_filtered)[grepl("Involving_", names(driver_filtered))]
+
+#Creating long-format data
+long_df <- driver_filtered %>%
+  select(FatalBinary, all_of(involvement_features)) %>%
+  pivot_longer(cols = all_of(involvement_features), names_to = "DriverType", values_to = "Involved") %>%
+  filter(Involved == 1)
+
+#Summarising fatality rates
+fatality_summary <- long_df %>%
+  group_by(DriverType) %>%
+  summarise(
+    FatalCrashes = sum(FatalBinary),
+    TotalCrashes = n(),
+    FatalityRate = round(FatalCrashes / TotalCrashes, 3)
+  ) %>%
+  arrange(desc(FatalityRate))
+
+#Plotting for presentation
+ggplot(fatality_summary, aes(x = reorder(DriverType, -FatalityRate), y = FatalityRate)) +
+  geom_col(fill = "darkred") +
+  geom_text(aes(label = FatalityRate), vjust = -0.5, size = 3.5) +
+  labs(
+    title = "Fatal Crash Rate by Driver Type",
+    subtitle = "Driver types with higher proportions of fatal outcomes",
+    x = "Driver Type",
+    y = "Proportion of Fatal Crashes"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 11)
+  )
+```
+
+
+```{r Handle Class Imbalance with Downsampling, include=FALSE}
+#Downsampling to balance Fatal (1) vs Non-Fatal (0)
+train_balanced <- downSample(
+  x = train_data[, -which(names(train_data) %in% c("Crash_Severity", "FatalBinary"))],
+  y = train_data$FatalBinary
+)
+
+#Renaming back to correct column
+names(train_balanced)[ncol(train_balanced)] <- "FatalBinary"
+
+#Confirming balanced class sizes
+table(train_balanced$FatalBinary)
+```
+
+
+##Model 1: Random Forest with Downsampling
+
+This model is used with the caret package as to downsample the majority class being non-fatal crashes, by creating a balanced training set. This method helps the model gain knowledge by learning in an equal format from both the fatal and non-fatal examples.
+
+
+```{r train-rf-downsampled}
+#Training Random Forest with balanced training set
+rf_model <- randomForest(
+  FatalBinary ~ .,
+  data = train_balanced,
+  ntree = 1000,
+  importance = TRUE
+)
+
+#Printing model summary
+print(rf_model)
+```
+
+
+```{r eval-rf-downsampled}
+#Probability of class "1" (Fatal)
+#rf_probs <- predict(rf_model, newdata = test_data, type = "prob")[, "1"]
+rf_preds <- predict(rf_model, newdata = test_data)
+confusionMatrix(rf_preds, test_data$FatalBinary, positive = "1")
+#Getting predicted probabilities of being fatal
+rf_probs <- predict(rf_model, newdata = test_data, type = "prob")[, "1"]
+#Plot ROC and calculate AUC
+roc_rf <- roc(test_data$FatalBinary, rf_probs)
+plot(roc_rf, main = "ROC Curve - Random Forest")
+auc(roc_rf)
+```
+
+
+Accuracy: 62.19%
+Sensitivity: 67.84%
+Specificity: 61.57%
+Balanced Accuracy: 64.70%
+AUC: 0.6988
+Kappa: 0.1226
+
+
+The Downsampling model is performing well as it detects the minority class (Fatal), by achieving a pretty strong sensitivity of 0.6784, meaning that 68% approximaticaly was correctly identified. The AUC of 0.6988 is an indication of a good overall classifier ability, whereas, the overall accuracy is found to be moderatively good with 62.19% due to the imbalance of classes, which is common when downsampling. Yet, this method is still maintaining a high interpretability and balaced detection rates.
+
+
+```{r results-by-type-downsampled}
+#Adding predicted class (0 or 1) to test set
+test_data$Predicted <- predict(rf_model, newdata = test_data)
+
+#Converting factors to numeric
+test_data$FatalBinary <- as.numeric(as.character(test_data$FatalBinary))
+test_data$Predicted <- as.numeric(as.character(test_data$Predicted))
+
+#Reshaping for per-driver-type comparison
+library(tidyr)
+driver_columns <- names(test_data)[grepl("Involving_", names(test_data))]
+
+long_test <- test_data %>%
+  select(all_of(driver_columns), FatalBinary, Predicted) %>%
+  pivot_longer(cols = all_of(driver_columns), names_to = "DriverType", values_to = "Involved") %>%
+  filter(Involved == 1)
+
+#Summarizing actual vs predicted
+summary_test <- long_test %>%
+  group_by(DriverType) %>%
+  summarise(
+    ActualFatal = sum(FatalBinary),
+    PredictedFatal = sum(Predicted),
+    Total = n(),
+    ActualRate = round(ActualFatal / Total, 3),
+    PredictedRate = round(PredictedFatal / Total, 3)
+  ) %>%
+  arrange(desc(ActualRate))
+
+#Plot
+ggplot(summary_test, aes(x = reorder(DriverType, -ActualRate))) +
+  geom_col(aes(y = ActualRate), fill = "firebrick", alpha = 0.7, width = 0.6) +
+  geom_col(aes(y = PredictedRate), fill = "steelblue", alpha = 0.7, width = 0.3) +
+  labs(
+    title = "Test Set: Actual vs Predicted Fatality Rates by Driver Type",
+    subtitle = "Red = Actual, Blue = Predicted",
+    x = "Driver Type Involvement",
+    y = "Fatality Rate"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+The downsampling model has a tendency to over predict rates with all the driver types present, more so, when it comes to males and unlicensed drivers. While it is still capturing general trends, the predictors are of high consistency compared to the actual rates.
+
+
+```{r importance-downsampled}
+#Displaying most influential variables
+varImpPlot(rf_model, main = "Variable Importance - Random Forest")
+```
+
+
+The downsampling model shows that "overseas licensed driver" and "female driver" have emerged out to be the most important influencers when ti comes to fatal crash predictions. These variables are contributors to the reducement of uncertainty across decision splits.
+
+
+##Model 2: Random Forest with Oversampling Using rose package
+
+Using the Rose package, this particular model uses an oversampling method to oversample te minority class "fatal crashes" by creating new synthetic examples. Making it helpful when wanting to improve the model's ability of detecting rara fatal crash cases.
+
+
+```{r oversampling, include=FALSE}
+
+#Performing oversampling on training data
+train_oversampled <- ovun.sample(FatalBinary ~ ., data = train_data, method = "over", N = sum(train_data$FatalBinary == 0) * 2)$data
+
+#Checking class distribution
+table(train_oversampled$FatalBinary)
+```
+
+
+```{r train-rf-oversampled}
+#Training Random Forest model on oversampled data
+rf_model_over <- randomForest(
+  FatalBinary ~ .,
+  data = train_oversampled[, !names(train_oversampled) %in% "Crash_Severity"],
+  ntree = 1000,
+  importance = TRUE
+)
+
+print(rf_model_over)
+```
+
+
+```{r eval-rf-oversampled}
+#Predicting on test set
+rf_preds_over <- predict(rf_model_over, newdata = test_data)
+
+#Ensuring factors with same levels
+rf_preds_over <- factor(rf_preds_over, levels = c(0, 1))
+test_data$FatalBinary <- factor(test_data$FatalBinary, levels = c(0, 1))
+
+#Confusion matrix
+confusionMatrix(rf_preds_over, test_data$FatalBinary, positive = "1")
+```
+
+
+```{r eval-rf-oversampled}
+#ROC and AUC 
+rf_probs_over <- predict(rf_model_over, newdata = test_data, type = "prob")[, "1"]
+roc_over <- roc(test_data$FatalBinary, rf_probs_over)
+plot(roc_over, main = "ROC Curve - Oversampled Random Forest")
+auc(roc_over)
+```
+
+
+Accuracy: 63.64%
+Sensitivity: 67.61%
+Specificity: 63.21%
+Balanced Accuracy: 65.41%
+AUC: 0.7O26
+Kappa: 0.1321
+
+
+The ROSE package model has a good balanced classification with some improved metrics over the downsampling method. It has been able to correctly identify about 68% of its fatal crashed, with an AUC of 0.7026, the highest amongst all models, with an a clear indication of strong classifier performance. The moderate accuracy of 63.6% and balanced accuracy of around 65.4% has demonstrated that this model is quite reliable when detecting minority class outcomes while still being able to maintain some sense of stability.
+
+
+```{r results-by-type-oversampled}
+#Adding predicted class to test set
+test_data$Predicted_Over <- as.numeric(as.character(rf_preds_over))
+
+#Reshaping data
+long_test_over <- test_data %>%
+  select(all_of(driver_columns), FatalBinary, Predicted_Over) %>%
+  pivot_longer(cols = all_of(driver_columns), names_to = "DriverType", values_to = "Involved") %>%
+  filter(Involved == 1)
+
+#Converting to numeric for aggregation
+long_test_over$FatalBinary <- as.numeric(as.character(long_test_over$FatalBinary))
+long_test_over$Predicted_Over <- as.numeric(as.character(long_test_over$Predicted_Over))
+
+#Summarising actual vs predicted
+summary_test_over <- long_test_over %>%
+  group_by(DriverType) %>%
+  summarise(
+    ActualFatal = sum(FatalBinary),
+    PredictedFatal = sum(Predicted_Over),
+    Total = n(),
+    ActualRate = round(ActualFatal / Total, 3),
+    PredictedRate = round(PredictedFatal / Total, 3)
+  ) %>%
+  arrange(desc(ActualRate))
+
+#Plot
+ggplot(summary_test_over, aes(x = reorder(DriverType, -ActualRate))) +
+  geom_col(aes(y = ActualRate), fill = "firebrick", alpha = 0.7, width = 0.6) +
+  geom_col(aes(y = PredictedRate), fill = "steelblue", alpha = 0.7, width = 0.3) +
+  labs(
+    title = "Test Set: Actual vs Predicted Fatality Rates by Driver Type (Oversampled)",
+    subtitle = "Red = Actual, Blue = Predicted",
+    x = "Driver Type Involvement",
+    y = "Fatality Rate"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+This ROSE oversampling model has predicted the fatality rates are a consistant rate for all driver types, more so, when it concerns Males, Unlicensed, Senior drivers, which shows that the sensitivity as improved but the precision is reducing due to the minority class predictions.
+
+
+```{r importance-oversampled}
+#Displaying variable importance for oversampled model
+varImpPlot(rf_model_over, main = "Variable Importance - Random Forest (Oversampled)")
+```
+
+
+The ROSE model, the variables like Overseas_licensed_driver, provisional_driver, and femal_driver has been the highest important which is a suggestion that these driver types were the strongest predictors for the identification of fatal crash outcomes.
+
+
+## Model 3: Random Forest oversampling using SMOTE package
+
+Using SMOTE package is a technique that generates synthethic fatal crash samples, which unlike the ROSE package, creates new cases based on its nearest neightbors, making it ideal to improve the generalisation and reducing the overfitting.
+
+
+```{r SMOTE Oversampling}
+#Loading smotefamily package
+library(smotefamily)
+
+#Converting target to numeric (0/1)
+train_data$FatalBinary <- as.numeric(as.character(train_data$FatalBinary))
+
+#Removing Crash_Severity
+train_smote_input <- train_data[, !names(train_data) %in% "Crash_Severity"]
+
+#Applying SMOTE 
+# The last argument (K) is number of neighbors; typically K = 5
+smote_result <- SMOTE(train_smote_input[, -which(names(train_smote_input) == "FatalBinary")], 
+                      train_smote_input$FatalBinary,
+                      K = 5,
+                      dup_size = 4)  # 400% over-sampling
+
+#Combining features and new balanced target
+train_smote <- smote_result$data
+colnames(train_smote)[ncol(train_smote)] <- "FatalBinary"
+
+#Converting FatalBinary back to factor
+train_smote$FatalBinary <- factor(train_smote$FatalBinary)
+
+#Training Random Forest
+rf_model_smote <- randomForest(
+  FatalBinary ~ .,
+  data = train_smote,
+  ntree = 1000,
+  importance = TRUE
+)
+
+#Predicting on test set
+rf_preds_smote <- predict(rf_model_smote, newdata = test_data)
+rf_preds_smote <- factor(rf_preds_smote, levels = c(0, 1))
+test_data$FatalBinary <- factor(test_data$FatalBinary, levels = c(0, 1))
+
+#Confusion matrix
+confusionMatrix(rf_preds_smote, test_data$FatalBinary, positive = "1")
+
+#AUC and ROC
+rf_probs_smote <- predict(rf_model_smote, newdata = test_data, type = "prob")[, "1"]
+roc_smote <- roc(test_data$FatalBinary, rf_probs_smote)
+plot(roc_smote, main = "ROC Curve - SMOTE Random Forest")
+auc(roc_smote)
+```
+
+
+Accuracy: 84.14%
+Sensitivity: 20.66%
+Specificity: 91.18%
+Balanced Accuracy: 55.92%
+AUC: 0.6838
+Kappa: 0.1182
+
+The oversampling using SMOTE package model has shown a very high accuracy of 84.1%, which is quite misleading since there is a class imbalance, thus meaning its performance for detecting fatal crashes is quite poor, while having at the same time a low sensitivity of 20.66%. This is a clear statement that this model misses around 4 on 5 fatal crashes. The AUC stand around 0.6838 which is found to also be the lowest amongst all models, hence a weak discriminatory power. Despite the strong results for the majority class, this model is in our minds not a reliable one when it comes to the identification of fatal outcomes, which is here our main analysis goal.
+
+
+```{r results-by-type smote}
+#Adding predicted class to test set
+test_data$Predicted_SMOTE <- as.numeric(as.character(rf_preds_smote))
+
+#Ensuring FatalBinary is numeric (if not already)
+test_data$FatalBinary <- as.numeric(as.character(test_data$FatalBinary))
+
+#Reshaping test data for per-driver-type analysis
+library(tidyr)
+driver_columns <- names(test_data)[grepl("Involving_", names(test_data))]
+
+long_test_smote <- test_data %>%
+  select(all_of(driver_columns), FatalBinary, Predicted_SMOTE) %>%
+  pivot_longer(cols = all_of(driver_columns),
+               names_to = "DriverType",
+               values_to = "Involved") %>%
+  filter(Involved == 1)
+
+#Summarising actual vs predicted
+summary_test_smote <- long_test_smote %>%
+  group_by(DriverType) %>%
+  summarise(
+    ActualFatal = sum(FatalBinary),
+    PredictedFatal = sum(Predicted_SMOTE),
+    Total = n(),
+    ActualRate = round(ActualFatal / Total, 3),
+    PredictedRate = round(PredictedFatal / Total, 3)
+  ) %>%
+  arrange(desc(ActualRate))
+
+#Plot comparison
+ggplot(summary_test_smote, aes(x = reorder(DriverType, -ActualRate))) +
+  geom_col(aes(y = ActualRate), fill = "firebrick", alpha = 0.7, width = 0.6) +
+  geom_col(aes(y = PredictedRate), fill = "steelblue", alpha = 0.7, width = 0.3) +
+  labs(
+    title = "Test Set: Actual vs Predicted Fatality Rates by Driver Type (SMOTE)",
+    subtitle = "Red = Actual, Blue = Predicted",
+    x = "Driver Type Involvement",
+    y = "Fatality Rate"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+This SMOTE model has a close alignment with the actual fatality rates for all driver types, including the Male and Young drivers, which is an indication of an improvement regarding balance but with a bit of underprediction for some categories.
+
+
+```{r importance-smote}
+varImpPlot(rf_model_smote, main = "Variable Importance - Random Forest (SMOTE)")
+```
+
+
+The SMOTE model shows that "Overseas Licensed Driver" and "Female Driver" have been identified as the most influent predictorrs in the determination of fatal crash outcomes.
+
+
+## Model 4: Random Forest with Upsampling (caret)
+
+
+This model uses basic upsampling techniques via caret package to help balance the dataset while duplicating fatal crash cases. This method helps improve the sensitivity by making sure the model is able to see more fatal examples, therefore, detecting rare but cricital cases better.
+
+```{r upsampling-prep}
+#Ensuring FatalBinary is a factor
+train_data$FatalBinary <- factor(train_data$FatalBinary)
+
+#Displaying original training distribution
+cat("Training set dimensions:", dim(train_data), "\n")
+cat("Test set dimensions:", dim(test_data), "\n")
+cat("Training set class distribution before upsampling:\n")
+print(table(train_data$FatalBinary))
+
+#Upsampling the minority class (Fatal = 1)
+train_balanced_up <- upSample(
+  x = train_data[, names(train_data) != "FatalBinary"],
+  y = train_data$FatalBinary,
+  yname = "FatalBinary"
+)
+
+#Displaying upsampled class distribution
+cat("Training set dimensions after upsampling:", dim(train_balanced_up), "\n")
+cat("Training set class distribution after upsampling:\n")
+print(table(train_balanced_up$FatalBinary))
+```
+
+
+```{r upsampling-model}
+#Removing Crash_Severity from upsampled training data
+train_balanced_up <- train_balanced_up[, !names(train_balanced_up) %in% "Crash_Severity"]
+
+#Training Random Forest on upsampled data
+rf_model_upsample <- randomForest(
+  FatalBinary ~ .,
+  data = train_balanced_up,
+  ntree = 1000,
+  importance = TRUE
+)
+
+#Removing Crash_Severity from test_data if it exists
+if ("Crash_Severity" %in% colnames(test_data)) {
+  test_data <- test_data %>% select(-Crash_Severity)
+}
+
+#Predicting on test set
+rf_preds_upsample <- predict(rf_model_upsample, newdata = test_data)
+rf_preds_upsample <- factor(rf_preds_upsample, levels = c(0, 1))
+test_data$FatalBinary <- factor(test_data$FatalBinary, levels = c(0, 1))
+```
+
+
+```{r upsampling-eval}
+#Confusion Matrix
+rf_preds_upsample <- factor(rf_preds_upsample, levels = c("0", "1"))
+test_data$FatalBinary <- factor(test_data$FatalBinary, levels = c("0", "1"))
+cm_up <- confusionMatrix(rf_preds_upsample, test_data$FatalBinary, positive = "1")
+print(cm_up)
+
+#ROC and AUC
+# ROC and AUC
+rf_probs_upsample <- predict(rf_model_upsample, newdata = test_data, type = "prob")[, "1"]
+roc_upsample <- roc(test_data$FatalBinary, rf_probs_upsample)
+
+#Proper ROC plot with AUC and threshold
+plot(
+  roc_upsample,
+  main = "ROC Curve - Upsampled Random Forest",
+  print.auc = TRUE,        #Display AUC on plot
+  auc.polygon = TRUE,      #Shade under the curve
+  grid = TRUE,             #Add background grid
+  col = "#FF914D",         #Curve color
+  lwd = 2,                 #Line width
+  print.thres = TRUE       #Show thresholds on the curve
+)
+
+# Print AUC in console
+print(auc(roc_upsample))
+```
+
+
+Accuracy: 62.19%
+Sensitivity: 67.84%
+Specificity: 61.57%
+Balanced Accuracy: 64.70%
+AUC: 0.7014
+Kappa: 0.1226
+
+This model using the upsampling method with caret package has delivered the highest sensitivity of 67.84%, meaning that its the best when it comes to identify fatal crashes among all the models, which is a clear direct link to our analysis goal. Even though, the overall accuracy is 62.19%, the lowest out there, this is an expected outcomes as there is a class imbalance. The AUC of 0.7014 is also one confirmation that the model is able to distinguish between classes. Despite, the moderate Kappa, the model has achieve a practical balance when it comes to detecting fatal and non fatal cases, showcasing its strong use in real world scenarios.
+
+
+```{r upsampling-plot}
+# Add predicted class to test set
+test_data$Predicted_Up <- as.numeric(as.character(rf_preds_upsample))
+
+# Convert FatalBinary to numeric for plotting
+test_data$FatalBinary <- as.numeric(as.character(test_data$FatalBinary))
+
+# Reshape test data to long format
+long_test_up <- test_data %>%
+  select(all_of(driver_columns), FatalBinary, Predicted_Up) %>%
+  pivot_longer(cols = all_of(driver_columns), names_to = "DriverType", values_to = "Involved") %>%
+  filter(Involved == 1)
+
+# Summarize actual vs predicted fatality rates
+summary_test_up <- long_test_up %>%
+  group_by(DriverType) %>%
+  summarise(
+    ActualFatal = sum(FatalBinary),
+    PredictedFatal = sum(Predicted_Up),
+    Total = n(),
+    ActualRate = round(ActualFatal / Total, 3),
+    PredictedRate = round(PredictedFatal / Total, 3)
+  ) %>%
+  arrange(desc(ActualRate))
+
+# Plot
+ggplot(summary_test_up, aes(x = reorder(DriverType, -ActualRate))) +
+  geom_col(aes(y = ActualRate), fill = "firebrick", alpha = 0.7, width = 0.6) +
+  geom_col(aes(y = PredictedRate), fill = "steelblue", alpha = 0.7, width = 0.3) +
+  labs(
+    title = "Test Set: Actual vs Predicted Fatality Rates by Driver Type (Upsampled)",
+    subtitle = "Red = Actual, Blue = Predicted",
+    x = "Driver Type Involvement",
+    y = "Fatality Rate"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+The upsampling model has a tendency to overpredict the number of fatalities for all driver types, more so, regarding the young and unlicensed drivers, which shows us that there is an improvement for the sensivity for a trade-off on the overestimation.
+
+
+
+```{r Importance Upsampled}
+#Plotting variable importance for the Upsampled Random Forest model
+varImpPlot(rf_model_upsample, main = "Variable Importance - Random Forest (Upsampled)")
+```
+
+
+```{r Bar chart Importance Upsampling}
+#Extracting variable importance
+var_imp <- importance(rf_model_upsample)
+var_imp_df <- data.frame(Variable = rownames(var_imp), 
+                         MeanDecreaseGini = var_imp[, "MeanDecreaseGini"])
+
+#Sorting by importance
+library(dplyr)
+var_imp_df <- var_imp_df %>% arrange(desc(MeanDecreaseGini))
+
+#Ploting bar chart
+library(ggplot2)
+ggplot(var_imp_df, aes(x = reorder(Variable, MeanDecreaseGini), y = MeanDecreaseGini)) +
+  geom_col(fill = "#FF7F0E") +  
+  coord_flip() +
+  labs(
+    title = "Top Predictors – Random Forest (Upsampled)",
+    x = "Driver Type",
+    y = "Mean Decrease in Gini"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 12)
+  )
+```
+
+
+The upsampling model has demonstrated that driver types like overseas licensed, provisional, and female drivers are the most influent on the model's predictions. This is important as it highlights key groups that are considered significant contributors to the fatal crash outcomes.
+
+
+##Conclusion
+This analysis enables the exploration related to impact of class imbalance when predicting fatal crash outcomes using Random Forest classifiers. Three distinct models were utilised: One being trained on a downsampled dataset using the caret package, another on an oversampled dataset using the rose package, a third using synthetic sampling with the smote package, and a fourth using the basic upsampling with caret package.
+
+All the models have showcased an improved detection concerning the minority class (fatal crashes), yet some trade-offs between the accuracy, sensitivity, and AUC did occur. The oversampling model was able to achieve the highest accuracy of around 84.1% but had the lowest sensitivity of 0.275, meaning that its ability to identify fatal crashes correctly was sometimes false. The Rose model was able to get the strongest AUC of 0.7026, this indicates a better performance of classification overall, while maintaining a good sensitivity of 0.676. The downsampling model had a balanced senstivity of 0.603 and a pretty descent accuracy of 65.6%, but sadly was not able to outperform the others in any key important metric.
+
+The upsampling model, on the other hand, had got the highest sensitivity of all, around 0.678, with a good competitive AUC of 0.7018. These values show us that a strong performance in detecting fatal crashes was present, one of our primary goals during this analysis. While its accuracy was found to be slightly lower 62.2%, this method retained all fatal crashes while avoiding the discarity of non-fatal examples, thus, providing a more practical and interpretable model that had a balanced performance in all.
+
+Feature analysis was able to highlight similar key driver types that influenced the fatal outcomes, meaning that the patterns and trends found in each model were well captured.
+
+In conclusion, even though each of the models had their own particular strengths, the upsampling model proved to be the most appropriate balance between the important key metrics being sensitivity, AUC, and interpretability, hence, making it the obvious choice for this scenario. The aim of detecting fatal crash risks in an effective manner, while supporting policy decisions based on driver-related risk factors is valid through this model.

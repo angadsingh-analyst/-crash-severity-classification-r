@@ -1,0 +1,191 @@
+---
+title: "KNN Fatal Crash Classification"
+output: html_document
+---
+```{r}
+# Step 1: Load required packages
+# install.packages("kknn")
+# install.packages("pROC")
+library(caret)    # For upsampling and data splitting
+library(dplyr)    # For data manipulation
+library(class)
+library(dplyr)
+library(ggplot2)
+library(ggfortify)
+library(tidyr)
+library(kknn)
+library(pROC)
+
+# Step 2: Set seed for reproducibility
+set.seed(123)
+
+# Step 3: Load the dataset
+data <- read.csv("data/DriverInvolvement.csv")
+cat("Initial dataset dimensions:", dim(data), "\n")
+
+# Step 4: Select relevant columns (Crash_Severity and Involving_* indicators)
+# Retain Crash_Severity and columns starting with "Involving_"
+data <- data %>%
+  select(Crash_Severity, starts_with("Involving_"))
+cat("Selected columns:", names(data), "\n")
+
+# Step 5: Convert Yes/No to 1/0 for Involving_* columns
+data[, -1] <- lapply(data[, -1], function(x) ifelse(x == "Yes", 1, 0))
+cat("Sample of binarized data:\n")
+print(head(data[, 1:3]))  # Show first few columns for verification
+
+# Step 6: Convert Crash_Severity to binary FatalBinary (1 = Fatal, 0 = Others)
+data$FatalBinary <- factor(ifelse(data$Crash_Severity == "Fatal", 1, 0))
+cat("Initial class distribution (FatalBinary):\n")
+print(table(data$FatalBinary))
+
+# Step 7: Remove original Crash_Severity column
+data <- data %>% select(-Crash_Severity)
+
+# Step 8: Split into train (80%) and test (20%) sets
+split_index <- createDataPartition(data$FatalBinary, p = 0.8, list = FALSE)
+train <- data[split_index, ]
+test <- data[-split_index, ]
+cat("Training set dimensions:", dim(train), "\n")
+cat("Test set dimensions:", dim(test), "\n")
+cat("Training set class distribution before upsampling:\n")
+print(table(train$FatalBinary))
+
+# Step 9: Upsample the minority class (Fatal, 1) in the training set
+train_balanced <- upSample(
+  x = train[, names(train) != "FatalBinary"],
+  y = train$FatalBinary,
+  yname = "FatalBinary"
+)
+cat("Training set dimensions after upsampling:", dim(train_balanced), "\n")
+cat("Training set class distribution after upsampling:\n")
+print(table(train_balanced$FatalBinary))
+```
+```{r}
+# Extract predictors and labels
+x_train <- train_balanced[, names(train_balanced) != "FatalBinary"]
+y_train <- train_balanced$FatalBinary
+
+x_test <- test[, names(test) != "FatalBinary"]
+y_test <- test$FatalBinary
+
+# Standardize using training data scaling parameters
+x_train_scaled <- scale(x_train)
+x_test_scaled <- scale(x_test, 
+                       center = attr(x_train_scaled, "scaled:center"), 
+                       scale = attr(x_train_scaled, "scaled:scale"))
+```
+
+```{r}
+k_value <- floor(sqrt(nrow(x_train_scaled)))
+if (k_value %% 2 == 0) k_value <- k_value + 1
+pred <- knn(train = x_train_scaled, 
+            test = x_test_scaled, 
+            cl = y_train, k = k_value)
+y_test <- factor(y_test, levels = levels(pred))
+confusionMatrix(pred, y_test)
+```
+An initial attempt to run the knn function from the class package produced the error: "too many ties in knn". This error occurs because class::knn is very strict about ties. Since the independent variables are binary (0 or 1), after scaling, many data points can become identical or extremely close in the feature space. When the KNN algorithm looks for the k nearest neighbors, it might find multiple training points at the exact same distance from a test point, leading to an irresolvable tie in votes among the k neighbors.
+
+To overcome this limitation of class::knn and allow the model to run, a very small amount of random noise is added (noise_sd = 1e-8) to my scaled training and test data. This slight perturbation ensures that no two points are ever exactly equidistant, thereby preventing the tie and allowing the knn function to proceed with its classification. This is a common workaround for this specific issue when using class::knn with discrete features.
+
+```{r}
+set.seed(1)
+noise_sd <- 1e-8 # A slightly larger standard deviation for the noise
+x_train_scaled_noisy <- x_train_scaled + 
+  rnorm(length(x_train_scaled), mean = 0, sd = noise_sd)
+x_test_scaled_noisy <- x_test_scaled + 
+  rnorm(length(x_test_scaled), mean = 0, sd = noise_sd)
+```
+
+```{r}
+k_value_noise <- floor(sqrt(nrow(x_train_scaled_noisy)))
+if (k_value_noise %% 2 == 0) k_value_noise <- k_value_noise + 1
+pred_noise <- knn(train = x_train_scaled_noisy, test = x_test_scaled_noisy, cl = y_train, k = k_value_noise)
+y_test <- factor(y_test, levels = levels(pred_noise))
+confusionMatrix(pred_noise, y_test)
+cm_result <- confusionMatrix(pred_noise, y_test)
+accuracy <- (2236+316)/(2236+316+1607+110)
+```
+
+
+```{r}
+# Extract byClass metrics directly as a named vector (it already is one)
+metrics_vec <- cm_result$byClass
+
+# Extract overall accuracy
+overall_accuracy <- cm_result$overall["Accuracy"]
+
+# Create the data frame for plotting
+metrics_df <- data.frame(
+  Metric = c("Sensitivity (True Positive Rate)", "Specificity (True Negative Rate)", "Pos Pred Value", "Neg Pred Value", "Balanced Accuracy", "Overall Accuracy"),
+  Value = c(metrics_vec["Sensitivity"], metrics_vec["Specificity"], metrics_vec["Pos Pred Value"], metrics_vec["Neg Pred Value"], metrics_vec["Balanced Accuracy"], overall_accuracy)
+)
+
+# Plotting selected metrics
+ggplot(metrics_df, aes(x = Metric, y = Value, fill = Metric)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = round(Value, 3)), vjust = -0.5, size = 3) + # Add value labels
+  labs(title = "KNN Model Performance Metrics",
+       x = "Metric",
+       y = "Value") +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), # Rotate labels for readability
+        plot.title = element_text(hjust = 0.5)) +
+  scale_fill_brewer(palette = "Paired") # Use a color palette (note: corrected typo 'p.' to 'palette')
+```
+The confusion matrix provides a detailed breakdown of my model's performance:
+**Accuracy (0.5978):** This indicates that about 59.78% of the total predictions made by my KNN model were correct. While this might seem low, it's important to consider the class imbalance in the original test set.
+**No Information Rate (0.9002):** This is the accuracy I would achieve if I simply predicted the majority class (Non-Fatal, 0) for every instance. My model's accuracy is significantly lower than this, which means it's struggling to correctly identify the minority class (Fatal). The P-Value [Acc > NIR] of 1 confirms that my model's accuracy is not significantly better than just guessing the majority class, which is a concern.
+**Kappa (0.126):** Kappa measures the agreement between predicted and observed classifications, accounting for chance agreement. A Kappa value of 0.126 indicates only slight agreement, suggesting my model's performance is not much better than random chance.
+**Sensitivity (0.5818):** This is the true positive rate for the '0' class (Non-Fatal). It means my model correctly identified 58.18% of the actual non-fatal crashes.
+**Specificity (0.7418):** This is the true negative rate for the '0' class (Non-Fatal), which means my model correctly identified 74.18% of the actual fatal crashes (as '0' is the 'positive' class here, specificity refers to correctly identifying the '1' class as '1').
+**Pos Pred Value (0.9531):** For class '0', this is the precision. When my model predicts '0' (Non-Fatal), it is correct 95.31% of the time. This is high because the majority class is '0'.
+**Neg Pred Value (0.1643):** For class '0', this is the negative predictive value. When my model predicts '1' (Fatal), it is correct only 16.42% of the time. This is a critical area for improvement.
+**Balanced Accuracy (0.6618):** This is the average of sensitivity and specificity, which provides a more balanced view of performance when classes are imbalanced. My balanced accuracy is higher than overall accuracy, showing some ability to identify the minority 'Fatal' class, which overall accuracy wouldn't fully reflect due to the sheer dominance of the 'Non-Fatal' cases. However, a Balanced Accuracy of 0.6617 still indicates significant room for improvement.
+Overall, the model is performing quite poorly, especially in identifying 'Fatal' crashes (the minority class). This suggests that despite upsampling and adding noise, the current set of binary features might not be sufficiently discriminatory for KNN to effectively separate the 'Fatal' and 'Non-Fatal' crash outcomes. Further feature engineering, trying different models, or exploring more advanced resampling techniques might be necessary.
+
+```{r}
+# {r AUC-ROC Evaluation, echo=TRUE}
+# AUC-ROC Evaluation for the model with noisy data
+
+# Step 1: Prepare dataframes for kknn
+train_df_noisy <- as.data.frame(x_train_scaled_noisy)
+train_df_noisy$FatalBinary <- y_train 
+
+test_df_noisy <- as.data.frame(x_test_scaled_noisy)
+test_df_noisy$FatalBinary <- y_test 
+
+# Step 2: Run kknn model to get probabilities
+knn_model_prob <- kknn(
+  FatalBinary ~ .,       
+  train = train_df_noisy,
+  test = test_df_noisy,
+  k = k_value_noise,      
+  distance = 2,           # Euclidean distance is the default
+  kernel = "rectangular"  # Default kernel, can be explored
+)
+
+# Step 3: Extract probabilities for the positive class (class '1' - Fatal)
+prob_positive_class <- knn_model_prob$prob[, "1"]
+
+# Step 4: Create ROC object and plot ROC curve
+roc_obj <- roc(
+  response = test_df_noisy$FatalBinary, # Actual test labels
+  predictor = prob_positive_class,      # Predicted probabilities for the positive class
+  levels = c("0", "1")                  # Specify levels: negative class first, then positive
+)
+
+# Plot the ROC curve
+plot(roc_obj,
+     main = "ROC Curve for KNN Model (Fatal vs. Non-Fatal)",
+     print.auc = TRUE,        # Display AUC value on the plot
+     auc.polygon = TRUE,      # Shade the area under the curve
+     grid = TRUE,             # Add a grid for readability
+     col = "#1c61b6",         # Color of the ROC curve
+     lwd = 2,                 # Line width of the ROC curve
+     print.thres = TRUE       # Display threshold values on the curve
+)
+roc_obj$auc
+```
